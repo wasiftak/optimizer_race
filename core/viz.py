@@ -16,8 +16,8 @@ def _grid(terrain, n=200):
     return xs.numpy(), ys.numpy(), Z.numpy()
 
 
-def contour_base(terrain):
-    """Contour map of the terrain with a star at the global minimum."""
+def contour_base(terrain, zone=None):
+    """Contour map with a star at the minimum and an optional danger-zone rectangle."""
     xs, ys, Z = _grid(terrain)
     fig = go.Figure()
     fig.add_trace(go.Contour(
@@ -35,11 +35,19 @@ def contour_base(terrain):
         yaxis=dict(range=[ymin, ymax], title='y (weight 2)'),
         height=560, margin=dict(l=10, r=10, t=40, b=10),
         legend=dict(orientation='h', y=1.08))
+    if zone is not None:
+        x0, x1, y0, y1 = zone
+        fig.add_shape(type='rect', x0=x0, x1=x1, y0=y0, y1=y1, layer='above',
+                      line=dict(color='#e63946', width=2, dash='dash'),
+                      fillcolor='rgba(230,57,70,0.18)')
+        fig.add_annotation(x=x0, y=y1, text='Danger zone', showarrow=False,
+                           xanchor='left', yanchor='bottom',
+                           font=dict(color='#e63946', size=12))
     return fig
 
 
 def paths_figure(terrain, logs, colors):
-    """Full path of every racer. colors: dict name -> hex colour."""
+    """Full path of every racer (static). colors: dict name -> hex colour."""
     fig = contour_base(terrain)
     xmin, xmax, ymin, ymax = terrain.bounds
     end_symbol = {'finished': 'star', 'crashed': 'x'}
@@ -86,9 +94,10 @@ def _car_marker(color, symbol):
     return dict(symbol=symbol, size=16, color=color, line=dict(color='white', width=2))
 
 
-def animated_race_figure(terrain, logs, colors, stride=2, frame_ms=60, max_frames=150):
+def animated_race_figure(terrain, logs, colors, stride=2, frame_ms=60, max_frames=150,
+                         zone=None):
     """All racers move together. Plays in the browser via Plotly frames."""
-    fig = contour_base(terrain)
+    fig = contour_base(terrain, zone)
     base = len(fig.data)
     paths = [_plot_path(terrain, l) for l in logs]
     n = len(logs)
@@ -124,10 +133,11 @@ def animated_race_figure(terrain, logs, colors, stride=2, frame_ms=60, max_frame
                                name=str(k)))
     fig.frames = frames
 
+    # every step gets a label so "Step: N" always shows; the tick labels are hidden
     steps = []
-    for j, k in enumerate(ks):
+    for k in ks:
         steps.append(dict(
-            method='animate', label=str(k) if j % 25 == 0 else '',
+            method='animate', label=str(k),
             args=[[str(k)], dict(mode='immediate',
                                  frame=dict(duration=0, redraw=False),
                                  transition=dict(duration=0))]))
@@ -147,5 +157,43 @@ def animated_race_figure(terrain, logs, colors, stride=2, frame_ms=60, max_frame
                                         transition=dict(duration=0))]),
             ])],
         sliders=[dict(active=0, x=0.18, len=0.82, y=-0.08, yanchor='top',
-                      currentvalue=dict(prefix='Step: '), steps=steps)])
+                      currentvalue=dict(prefix='Step: ', font=dict(size=14)),
+                      font=dict(color='rgba(0,0,0,0)'),
+                      steps=steps)])
+    return fig
+
+
+def surface_figure(terrain, logs, colors, n=120):
+    """3D surface (log-compressed loss) with each racer's path drawn on top."""
+    xs, ys, Z = _grid(terrain, n)
+    fig = go.Figure()
+    fig.add_trace(go.Surface(x=xs, y=ys, z=Z, colorscale='Viridis', showscale=False,
+                             opacity=0.8, hoverinfo='skip', name='loss'))
+    off = 0.03 * float(np.nanmax(Z))                 # lift lines above the surface
+    fig.add_trace(go.Scatter3d(
+        x=[terrain.minimum[0]], y=[terrain.minimum[1]], z=[off], mode='markers',
+        marker=dict(size=7, color='gold', symbol='diamond'), name='Minimum'))
+    end_symbol = {'finished': 'diamond', 'crashed': 'x'}
+    for log in logs:
+        c = colors[log.name]
+        px, py = _plot_path(terrain, log)
+        p = torch.tensor([px, py], dtype=torch.float32)
+        gap = torch.clamp(terrain.fn(p) - terrain.fmin, min=0.0)
+        pz = (torch.log1p(gap).numpy() + off).tolist()
+        fig.add_trace(go.Scatter3d(x=px, y=py, z=pz, mode='lines',
+                                   line=dict(color=c, width=6), name=log.name))
+        fig.add_trace(go.Scatter3d(x=px[:1], y=py[:1], z=pz[:1], mode='markers',
+                                   marker=dict(size=5, color=c, symbol='circle'),
+                                   showlegend=False, hoverinfo='skip'))
+        fig.add_trace(go.Scatter3d(
+            x=px[-1:], y=py[-1:], z=pz[-1:], mode='markers',
+            marker=dict(size=7, color=c, symbol=end_symbol.get(log.status, 'square')),
+            showlegend=False,
+            hovertext=f'{log.name}: {log.status}, step {log.steps[-1]}',
+            hoverinfo='text'))
+    fig.update_layout(
+        height=620, margin=dict(l=0, r=0, t=30, b=0),
+        scene=dict(xaxis_title='x (weight 1)', yaxis_title='y (weight 2)',
+                   zaxis_title='log(1 + loss)'),
+        legend=dict(orientation='h', y=1.05))
     return fig

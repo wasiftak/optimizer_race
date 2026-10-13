@@ -117,6 +117,17 @@ def hazards_are_reproducible():
     assert a.x == b.x and a.loss == b.loss
 
 
+@check
+def commentary_runs_on_real_race():
+    from core.terrains import TERRAINS
+    from core.landscape_engine import run_landscape_race
+    from core.commentary import generate_commentary
+    t = TERRAINS['canyon']
+    logs = run_landscape_race([_cfg('SGD', 0.08), _cfg('Adam', 0.08)], t, t.default_start)
+    lines = generate_commentary(logs, t)
+    assert lines and all(len(x) == 3 for x in lines)
+
+
 if __name__ == '__main__':
     failed = 0
     for fn in CHECKS:

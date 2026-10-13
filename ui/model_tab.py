@@ -9,7 +9,9 @@ import streamlit as st
 from core.config import DEFAULT_SEED, DEVICE
 from core.data import get_data
 from core.models import build_model, summarize
+from core.preview import sample_images
 from core.race_engine import run_model_race
+from core.registry_datasets import DATASETS, DATASET_ORDER, get_spec
 from core.registry_models import MODEL_PRESETS
 from core.schemas import RaceConfig, RacerConfig
 from core.storage import save_run, load_run, list_runs, replay_logs, total_steps
@@ -20,23 +22,40 @@ from ui.garage import render_garage
 REDRAW_EVERY = 5        # redraw the live view every N steps (tunable)
 EVAL_EVERY = 10         # steps between test-accuracy evaluations
 SUBSET = 3000           # training images
-CHANCE = 0.10           # 1 / n_classes for FashionMNIST
-DEFAULT_TARGET = 0.85   # calibrated: Adam and Momentum reach it, SGD does not in 300 steps
 SGD_LR = 0.03           # default rate for SGD, Momentum, Nesterov
 ADAPTIVE_LR = 0.003     # default rate for Adam, AdamW, RMSprop, Adagrad
 BATCH_SIZES = [32, 64, 128]
-IN_SHAPE, N_CLASSES = (1, 28, 28), 10      # FashionMNIST (Phase 6 makes this per dataset)
 
 
-@st.cache_resource(show_spinner='Loading FashionMNIST (the first run downloads about 30 MB)...')
-def cached_data(subset_size, seed):
-    return get_data(subset_size, 1000, seed)
+@st.cache_resource(show_spinner='Loading the dataset (the first use of a dataset downloads it)...')
+def cached_data(dataset, subset_size, seed):
+    return get_data(subset_size, 1000, seed, dataset=dataset)
 
 
 @st.cache_data(show_spinner=False)
 def _summary_rows(model_name, in_shape, n_classes):
     cfg = RacerConfig(name='x', color='#000000', optimizer='SGD', model=model_name)
     return summarize(build_model(cfg, in_shape, n_classes), in_shape)
+
+
+@st.cache_data(show_spinner=False)
+def _cached_preview(dataset):
+    return sample_images(dataset, 8, 0)
+
+
+def _preview(dataset):
+    spec = get_spec(dataset)
+    c, h, w = spec.in_shape
+    with st.expander(f'About {spec.name}', expanded=False):
+        st.caption(f'{spec.lesson} {c} channel(s), {h}x{w} pixels, {spec.n_classes} classes.')
+        try:
+            imgs = _cached_preview(dataset)
+        except Exception as e:
+            st.caption(f'No preview available: {e}')
+            return
+        cols = st.columns(len(imgs))
+        for col, (img, name) in zip(cols, imgs):
+            col.image(img, caption=name, width=84)
 
 
 def _make_slots():
@@ -49,11 +68,13 @@ def _draw(slots, logs, racers, rc, tag, status_text=None):
     """One drawing routine for live races, finished races and replays.
     `tag` must be unique within one script run (it keys the charts)."""
     colors = {r.name: r.color for r in racers}
-    slots['badge'].info(badge_text(racers))
+    spec = get_spec(rc.dataset)
+    slots['badge'].info(f'{badge_text(racers)}  |  Dataset: {spec.name}')
     if status_text is not None:
         slots['status'].markdown(status_text)
     slots['lanes'].plotly_chart(
-        lanes_figure(logs, colors, rc.target_acc, CHANCE), width='stretch', key=f'{tag}_lanes')
+        lanes_figure(logs, colors, rc.target_acc, spec.chance),
+        width='stretch', key=f'{tag}_lanes')
     with slots['curves'].container():
         c1, c2 = st.columns(2)
         c1.plotly_chart(loss_figure(logs, colors), width='stretch', key=f'{tag}_loss')
@@ -66,15 +87,16 @@ def _draw(slots, logs, racers, rc, tag, status_text=None):
         t2.plotly_chart(params_figure(logs, colors), width='stretch', key=f'{tag}_params')
 
 
-def _draw_summaries(slots, racers):
+def _draw_summaries(slots, racers, rc):
     """Layer table per racer. Drawn once after a race, replay or restore (not while training)."""
+    spec = get_spec(rc.dataset)
     with slots['summary'].container():
         st.markdown('**Model summaries**')
         for r in racers:
             preset = MODEL_PRESETS.get(r.model, {})
             with st.expander(f"{r.name}: {preset.get('label', r.model)}"):
                 try:
-                    rows = _summary_rows(r.model, IN_SHAPE, N_CLASSES)
+                    rows = _summary_rows(r.model, spec.in_shape, spec.n_classes)
                 except Exception as e:
                     st.caption(f'No summary available: {e}')
                     continue
@@ -89,7 +111,7 @@ def _draw_summaries(slots, racers):
 
 def _run_live(racers, rc, slots):
     try:
-        data = cached_data(rc.subset_size, rc.seed)
+        data = cached_data(rc.dataset, rc.subset_size, rc.seed)
         gen = run_model_race(racers, rc, data=data)       # setup errors raise here
     except ValueError as e:
         st.error(f'Cannot start the race: {e}')
@@ -113,7 +135,7 @@ def _run_live(racers, rc, slots):
         return None
     final = copy.deepcopy(logs)
     _draw(slots, final, racers, rc, 'final', '**Race finished.**')
-    _draw_summaries(slots, racers)
+    _draw_summaries(slots, racers, rc)
     path = save_run(racers, rc, final)
     st.success(f'Saved as a replay: {path.name}')
     return dict(logs=final, racers=racers, rc=rc, saved=path.name)
@@ -149,29 +171,37 @@ def _draw_replay(slots, rp):
     else:
         _draw(slots, replay_logs(logs, rp['k']), racers, rc, 'rstatic',
               f"**Replay** step {rp['k']} of {T}")
-    _draw_summaries(slots, racers)
+    _draw_summaries(slots, racers, rc)
 
 
 def render():
     st.subheader('Real Model Track')
-    st.caption('Every racer trains a small CNN on a 3,000-image FashionMNIST subset, with the '
-               'same seed and the same batches in the same order. Pick each racer\'s network in '
-               'the Garage. The lane position is the latest test accuracy.')
+    st.caption('Every racer trains a small CNN on a 3,000-image subset of the chosen dataset, '
+               'with the same seed and the same batches in the same order. Pick each racer\'s '
+               'network in the Garage. The lane position is the latest test accuracy.')
 
     racers = render_garage('model', SGD_LR, ADAPTIVE_LR)           # sidebar
 
-    c1, c2, c3, c4 = st.columns(4)
+    c0, c1, c2, c3, c4 = st.columns([1.3, 1.3, 0.9, 1.3, 0.9])
+    dataset = c0.selectbox('Dataset', DATASET_ORDER, format_func=lambda k: DATASETS[k].name,
+                           key='model_dataset',
+                           help='The images every racer learns from. The first use of a '
+                                'dataset downloads it once.')
+    spec = get_spec(dataset)
     steps = c1.slider('Steps', 50, 600, 300, step=50, key='model_steps',
                       help='How many training steps (mini-batches) each racer takes.')
     batch = c2.selectbox('Batch size', BATCH_SIZES, index=1, key='model_batch',
                          help='Images per step. Larger batches give smoother, slower steps.')
-    target = c3.slider('Target accuracy', 0.30, 0.99, DEFAULT_TARGET, step=0.01,
-                       format='%.2f', key='model_target',
+    target = c3.slider('Target accuracy', 0.30, 0.99, float(spec.default_target), step=0.01,
+                       format='%.2f', key=f'model_target_{dataset}',
                        help='A racer finishes the first time its test accuracy reaches this '
-                            f'value (checked every {EVAL_EVERY} steps).')
+                            f'value (checked every {EVAL_EVERY} steps). Each dataset has its '
+                            'own default.')
     seed = int(c4.number_input('Seed', 0, 9999, DEFAULT_SEED, step=1, key='model_seed',
                                help='Shared by every racer: same data subset, same batch order.'))
-    st.caption(f'Training on {DEVICE.upper()}, seed {seed}.')
+    st.caption(f'Training on {DEVICE.upper()}, seed {seed}. Chance level for {spec.name}: '
+               f'{spec.chance:.0%}.')
+    _preview(dataset)
 
     r1, r2 = st.columns([1, 3])
     run_clicked = r1.button('Run race', type='primary', key='model_run')
@@ -187,7 +217,7 @@ def render():
 
     slots = _make_slots()
     if run_clicked:
-        rc = RaceConfig(mode='model', seed=seed, max_steps=steps, dataset='fashion_mnist',
+        rc = RaceConfig(mode='model', seed=seed, max_steps=steps, dataset=dataset,
                         subset_size=SUBSET, batch_size=batch, target_acc=float(target),
                         eval_every=EVAL_EVERY)
         result = _run_live(racers, rc, slots)
@@ -204,4 +234,4 @@ def render():
         else:
             _draw(slots, stored['logs'], stored['racers'], stored['rc'], 'stored',
                   '**Last race** (press Run race to repeat it with new settings)')
-            _draw_summaries(slots, stored['racers'])
+            _draw_summaries(slots, stored['racers'], stored['rc'])

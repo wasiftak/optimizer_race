@@ -1,4 +1,5 @@
 # path: core/viz.py
+import math
 import numpy as np
 import plotly.graph_objects as go
 import torch
@@ -44,7 +45,6 @@ def paths_figure(terrain, logs, colors):
     end_symbol = {'finished': 'star', 'crashed': 'x'}
     for log in logs:
         c = colors[log.name]
-        # clamp so a diverging racer does not blow up the axes
         xs = np.clip(log.x, xmin, xmax)
         ys = np.clip(log.y, ymin, ymax)
         fig.add_trace(go.Scatter(x=xs, y=ys, mode='lines',
@@ -61,4 +61,91 @@ def paths_figure(terrain, logs, colors):
                         line=dict(color='white', width=2)),
             hovertext=f'{log.name}: {log.status}, step {log.steps[-1]}',
             hoverinfo='text'))
+    return fig
+
+
+def _plot_path(terrain, log):
+    """Plottable path. A crashed racer is cut at its last in-bounds position."""
+    xmin, xmax, ymin, ymax = terrain.bounds
+    x = np.array(log.x, dtype=float)
+    y = np.array(log.y, dtype=float)
+    ok = (np.isfinite(x) & np.isfinite(y) & (x >= xmin) & (x <= xmax)
+          & (y >= ymin) & (y <= ymax))
+    if log.status == 'crashed':
+        idx = np.where(ok)[0]
+        last = int(idx[-1]) if len(idx) else 0
+        x, y = x[:last + 1], y[:last + 1]
+    else:
+        x, y = np.clip(x, xmin, xmax), np.clip(y, ymin, ymax)
+    return x.tolist(), y.tolist()
+
+
+def _car_marker(color, symbol):
+    if symbol == 'x':
+        return dict(symbol='x', size=18, color=color, line=dict(color=color, width=3))
+    return dict(symbol=symbol, size=16, color=color, line=dict(color='white', width=2))
+
+
+def animated_race_figure(terrain, logs, colors, stride=2, frame_ms=60, max_frames=150):
+    """All racers move together. Plays in the browser via Plotly frames."""
+    fig = contour_base(terrain)
+    base = len(fig.data)
+    paths = [_plot_path(terrain, l) for l in logs]
+    n = len(logs)
+
+    for l, (xs, ys) in zip(logs, paths):          # trail traces
+        fig.add_trace(go.Scatter(x=xs[:1], y=ys[:1], mode='lines',
+                                 line=dict(color=colors[l.name], width=2.5),
+                                 name=l.name))
+    for l, (xs, ys) in zip(logs, paths):          # car traces
+        fig.add_trace(go.Scatter(x=xs[:1], y=ys[:1], mode='markers',
+                                 marker=_car_marker(colors[l.name], 'diamond'),
+                                 showlegend=False, hoverinfo='skip'))
+
+    T = max(len(xs) for xs, _ in paths)
+    stride = max(1, int(stride), math.ceil(T / max_frames))
+    ks = list(range(0, T, stride))
+    if ks[-1] != T - 1:
+        ks.append(T - 1)
+
+    end_symbol = {'finished': 'star', 'crashed': 'x'}
+    frames = []
+    for k in ks:
+        data = []
+        for (xs, ys) in paths:                    # trails up to frame k
+            i = min(k, len(xs) - 1)
+            data.append(go.Scatter(x=xs[:i + 1], y=ys[:i + 1]))
+        for l, (xs, ys) in zip(logs, paths):      # cars at frame k
+            i = min(k, len(xs) - 1)
+            sym = end_symbol.get(l.status, 'diamond') if i == len(xs) - 1 else 'diamond'
+            data.append(go.Scatter(x=[xs[i]], y=[ys[i]],
+                                   marker=_car_marker(colors[l.name], sym)))
+        frames.append(go.Frame(data=data, traces=list(range(base, base + 2 * n)),
+                               name=str(k)))
+    fig.frames = frames
+
+    steps = []
+    for j, k in enumerate(ks):
+        steps.append(dict(
+            method='animate', label=str(k) if j % 25 == 0 else '',
+            args=[[str(k)], dict(mode='immediate',
+                                 frame=dict(duration=0, redraw=False),
+                                 transition=dict(duration=0))]))
+    fig.update_layout(
+        margin=dict(l=10, r=10, t=40, b=90),
+        updatemenus=[dict(
+            type='buttons', direction='left', x=0.0, y=-0.1,
+            xanchor='left', yanchor='top', showactive=False,
+            buttons=[
+                dict(label='Play', method='animate',
+                     args=[None, dict(frame=dict(duration=frame_ms, redraw=False),
+                                      fromcurrent=True, mode='immediate',
+                                      transition=dict(duration=0))]),
+                dict(label='Pause', method='animate',
+                     args=[[None], dict(frame=dict(duration=0, redraw=False),
+                                        mode='immediate',
+                                        transition=dict(duration=0))]),
+            ])],
+        sliders=[dict(active=0, x=0.18, len=0.82, y=-0.08, yanchor='top',
+                      currentvalue=dict(prefix='Step: '), steps=steps)])
     return fig

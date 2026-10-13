@@ -1,16 +1,21 @@
 # STATE
 
-Current phase: 0 (Workspace and skeleton), finishing
-Last tag: none
-Environment: Windows, PowerShell, venv ucs668, Python 3.12, RTX 3050 4GB, torch cu124
-Works: app skeleton with two tabs, smoke test with 2 checks
-In progress: nothing
+Current phase: 1 (Landscape Track static), finishing
+Last tag: v0.0
+Environment: Windows, PowerShell, venv at ucs668\venv, Python 3.10.11, RTX 3050 4GB, torch 2.6.0+cu124
+Works: schemas (all 3 dataclasses), 3 terrains, all 7 optimizers + build_scheduler, landscape engine, contour and paths figures, landscape tab with 3 fixed racers (SGD, Momentum, Adam) sharing one lr
+Tests: 11 pytest tests, 7 smoke checks
 Files and contents:
-app.py - Streamlit entry, two empty tabs
+app.py - entry, calls ui.landscape_tab.render()
 core/config.py - paths, DEVICE, DEFAULT_SEED, RACER_COLORS
-scripts/smoke_test.py - check runner (run: python scripts/smoke_test.py)
-pytest.ini, requirements.txt, .gitignore - project config
-All other files are empty placeholders created in Phase 0
-Known issues: none
-Decisions: seed 42, smoke test uses sys.path.insert(0, '.'), always run from optimizer_race folder
-Next task: Phase 1 (schemas, terrains, optimizers, landscape engine, viz, UI, tests)
+core/schemas.py - RacerConfig, RaceConfig, RacerLog
+core/terrains.py - Terrain dataclass, bowl/canyon/banana, TERRAINS dict
+core/optimizers.py - OPTIMIZER_NAMES, build_optimizer, build_scheduler
+core/landscape_engine.py - run_landscape_race
+core/viz.py - contour_base, paths_figure
+ui/landscape_tab.py - render() with terrain select, shared lr, max steps, Run, figure, table
+scripts/smoke_test.py - 7 checks
+tests/test_terrains.py, tests/test_optimizers.py
+Known issues: banana default lr to be tuned after visual check
+Decisions: seed 42, smoke test uses sys.path.insert(0, '.'), run from optimizer_race, width='stretch' in Streamlit calls
+Next task: Phase 2 (animated race, Garage with 2-4 racers, rank_landscape, OPTIMIZER_PARAMS in config)

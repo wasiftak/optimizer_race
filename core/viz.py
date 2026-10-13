@@ -197,3 +197,92 @@ def surface_figure(terrain, logs, colors, n=120):
                    zaxis_title='log(1 + loss)'),
         legend=dict(orientation='h', y=1.05))
     return fig
+
+
+# ---------------- Real Model Track figures ----------------
+
+CRASH_GREY = '#9aa0a6'
+
+
+def moving_average(values, window):
+    """Trailing moving average; the first points average what is available."""
+    if window <= 1:
+        return list(values)
+    out = []
+    for i in range(len(values)):
+        seg = values[max(0, i - window + 1):i + 1]
+        out.append(sum(seg) / len(seg))
+    return out
+
+
+def latest_accuracy(log, default):
+    """Most recent evaluated accuracy (forward-filled), or default if none yet."""
+    for a in reversed(log.acc):
+        if a is not None:
+            return a
+    return default
+
+
+def lanes_figure(logs, colors, target_acc, chance=0.10):
+    """One horizontal lane per racer. Bar length = latest accuracy, gold line = target."""
+    names = [l.name for l in logs]
+    vals = [latest_accuracy(l, chance) for l in logs]
+    symbols = ['x' if l.status == 'crashed' else 'star' if l.status == 'finished'
+               else 'diamond' for l in logs]
+    cols = [CRASH_GREY if l.status == 'crashed' else colors[l.name] for l in logs]
+    text = ['crashed' if l.status == 'crashed' else f'{v:.1%}' for l, v in zip(logs, vals)]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        y=names, x=[max(v, 0.0) for v in vals], orientation='h',
+        marker=dict(color=cols, opacity=0.55), text=text, textposition='inside',
+        insidetextanchor='start', hoverinfo='skip', showlegend=False))
+    fig.add_trace(go.Scatter(
+        x=vals, y=names, mode='markers', showlegend=False,
+        marker=dict(symbol=symbols, size=22, color=cols,
+                    line=dict(color='white', width=2)),
+        hovertext=[f'{l.name}: {l.status}, accuracy {v:.1%}' for l, v in zip(logs, vals)],
+        hoverinfo='text'))
+    fig.add_shape(type='line', x0=target_acc, x1=target_acc, y0=0, y1=1,
+                  xref='x', yref='paper', line=dict(color='gold', width=3, dash='dash'))
+    fig.add_annotation(x=target_acc, y=1.0, yref='paper', text='Finish',
+                       showarrow=False, yanchor='bottom', font=dict(color='gold'))
+    top = min(1.0, max(target_acc + 0.08, max(vals) + 0.05))
+    fig.update_layout(
+        xaxis=dict(range=[0, top], tickformat='.0%', title='Test accuracy'),
+        yaxis=dict(autorange='reversed'),
+        height=110 + 62 * len(logs), margin=dict(l=10, r=10, t=30, b=10),
+        bargap=0.35)
+    return fig
+
+
+def loss_figure(logs, colors, smooth=5, log_y=False):
+    """Training loss per step (moving average over `smooth` steps)."""
+    fig = go.Figure()
+    for l in logs:
+        fig.add_trace(go.Scatter(
+            x=l.steps, y=moving_average(l.loss, smooth), mode='lines',
+            line=dict(color=colors[l.name], width=2.5), name=l.name))
+    fig.update_layout(
+        xaxis_title='Step', yaxis_title=f'Training loss (avg of {smooth})',
+        yaxis_type='log' if log_y else 'linear',
+        height=340, margin=dict(l=10, r=10, t=30, b=10),
+        legend=dict(orientation='h', y=1.12))
+    return fig
+
+
+def acc_figure(logs, colors, target_acc=None):
+    """Test accuracy at the evaluation steps only."""
+    fig = go.Figure()
+    for l in logs:
+        pts = [(s, a) for s, a in zip(l.steps, l.acc) if a is not None]
+        fig.add_trace(go.Scatter(
+            x=[p[0] for p in pts], y=[p[1] for p in pts], mode='lines+markers',
+            line=dict(color=colors[l.name], width=2.5), marker=dict(size=7), name=l.name))
+    if target_acc is not None:
+        fig.add_hline(y=target_acc, line=dict(color='gold', dash='dash', width=2))
+    fig.update_layout(
+        xaxis_title='Step', yaxis_title='Test accuracy', yaxis_tickformat='.0%',
+        height=340, margin=dict(l=10, r=10, t=30, b=10),
+        legend=dict(orientation='h', y=1.12))
+    return fig

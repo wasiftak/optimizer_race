@@ -128,6 +128,22 @@ def commentary_runs_on_real_race():
     assert lines and all(len(x) == 3 for x in lines)
 
 
+@check
+def model_race_runs_on_device():
+    import math
+    from core.config import DEVICE
+    from core.data import get_data
+    from core.race_engine import run_to_end
+    from core.schemas import RaceConfig
+    data = get_data(300, 200, seed=1)
+    rc = RaceConfig(mode='model', seed=1, max_steps=15, batch_size=32,
+                    target_acc=1.01, eval_every=5)
+    logs = run_to_end([_cfg('Adam', 0.005), _cfg('Momentum', 0.02)], rc, data=data)
+    for l in logs:
+        assert len(l.loss) == 15 and all(math.isfinite(v) for v in l.loss), (DEVICE, l.name)
+        assert l.n_params == 20490
+
+
 if __name__ == '__main__':
     failed = 0
     for fn in CHECKS:

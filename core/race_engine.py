@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from core.config import DEVICE
 from core.data import get_data
-from core.models import build_model, count_params
+from core.models import build_model, count_params, same_model
 from core.optimizers import build_optimizer, build_scheduler
 from core.schemas import RacerLog
 
@@ -45,8 +45,11 @@ def run_model_race(racers, race_cfg, data=None, model_factory=None, device=None)
     yields (step, logs) after every step. The yielded logs are live objects that keep
     changing, so copy them if you need a snapshot.
 
-    Fairness: one shared seed, one shared batch order, one base model deep-copied for
-    every racer (identical starting weights)."""
+    Fairness: one shared seed and one shared batch order. When every racer uses the same
+    model, one base model is deep-copied so the starting weights are identical. When the
+    models differ, the seed is reset before each model is built, so every architecture
+    starts from reproducible weights (racers with the same architecture still start
+    identical)."""
     device = device or DEVICE
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
@@ -59,11 +62,17 @@ def run_model_race(racers, race_cfg, data=None, model_factory=None, device=None)
     _validate(racers, race_cfg, len(xtr))
 
     make = model_factory or (lambda cfg: build_model(cfg, data['in_shape'], data['n_classes']))
-    base = make(racers[0])
+    shared = model_factory is not None or same_model(racers)
+    base = make(racers[0]) if shared else None
+
     states = []
     for cfg in racers:
-        m = copy.deepcopy(base).to(device)          # identical start for every racer
-        opt = build_optimizer(cfg, m.parameters())  # may raise ValueError: caught by the UI
+        if shared:
+            m = copy.deepcopy(base).to(device)         # identical start for every racer
+        else:
+            torch.manual_seed(race_cfg.seed)           # reproducible start per architecture
+            m = make(cfg).to(device)
+        opt = build_optimizer(cfg, m.parameters())     # may raise ValueError: caught by the UI
         sch = build_scheduler(cfg, opt, race_cfg.max_steps)
         states.append(dict(cfg=cfg, m=m, opt=opt, sch=sch, alive=True,
                            log=RacerLog(name=cfg.name, n_params=count_params(m))))

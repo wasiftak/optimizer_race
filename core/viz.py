@@ -286,3 +286,17 @@ def acc_figure(logs, colors, target_acc=None):
         height=340, margin=dict(l=10, r=10, t=30, b=10),
         legend=dict(orientation='h', y=1.12))
     return fig
+
+
+def params_figure(logs, colors):
+    """Parameter count per racer (the cost side of the race)."""
+    names = [l.name for l in logs]
+    vals = [l.n_params or 0 for l in logs]
+    fig = go.Figure(go.Bar(
+        x=names, y=vals, marker_color=[colors[n] for n in names],
+        text=[f'{v:,}' for v in vals], textposition='outside', hoverinfo='skip'))
+    top = max(vals) if vals and max(vals) > 0 else 1
+    fig.update_layout(
+        yaxis=dict(title='Parameters', range=[0, top * 1.25]),
+        height=300, margin=dict(l=10, r=10, t=20, b=10), showlegend=False)
+    return fig

@@ -4,6 +4,7 @@ import streamlit as st
 
 from core.config import RACER_COLORS, OPTIMIZER_PARAMS, LR_CHOICES
 from core.optimizers import OPTIMIZER_NAMES
+from core.registry_models import MODEL_ORDER, MODEL_PRESETS
 from core.schemas import RacerConfig
 
 _DEFAULT_OPTS = ['SGD', 'Momentum', 'Adam', 'RMSprop']
@@ -22,13 +23,27 @@ def lr_for_optimizer(opt, default_lr, adaptive_lr=None):
     return adaptive_lr
 
 
+def _model_label(key):
+    p = MODEL_PRESETS[key]
+    return f"{p['label']} ({p['params']:,} params)"
+
+
 def render_garage(mode, default_lr, adaptive_lr=None):
-    """Sidebar controls -> list[RacerConfig]. Knows nothing about the engine."""
+    """Sidebar controls -> list[RacerConfig]. Knows nothing about the engine.
+    In 'model' mode each racer also picks a network (or all share racer 1's choice)."""
     sb = st.sidebar
     sb.header('Garage')
     n = sb.slider('Number of racers', 2, 4, 3, key=f'{mode}_n')
+    same = True
+    if mode == 'model':
+        same = sb.checkbox(
+            'Use the same model for all racers', value=True, key='model_same',
+            help='On: a pure optimizer test (identical network and starting weights). '
+                 'Off: each racer picks its own network, so optimizer and architecture '
+                 'both affect the result.')
 
     racers, used = [], set()
+    shared_model = 'default'
     for i in range(n):
         with sb.expander(f'Racer {i + 1}', expanded=(i == 0)):
             opt = st.selectbox('Optimizer', OPTIMIZER_NAMES,
@@ -36,6 +51,22 @@ def render_garage(mode, default_lr, adaptive_lr=None):
                                key=f'{mode}_{i}_opt')
             name = st.text_input('Name', value=opt, key=f'{mode}_{i}_name_{opt}')
             color = st.color_picker('Colour', RACER_COLORS[i], key=f'{mode}_{i}_color')
+
+            model = 'default'
+            if mode == 'model':
+                if same and i > 0:
+                    model = shared_model
+                    st.caption(f'Model: {_model_label(model)} (same as Racer 1)')
+                else:
+                    model = st.selectbox(
+                        'Model (shared by all racers)' if same else 'Model',
+                        MODEL_ORDER, index=0, format_func=_model_label,
+                        key=f'{mode}_{i}_model',
+                        help='The network this racer trains.')
+                    st.caption(MODEL_PRESETS[model]['lesson'])
+                    if i == 0:
+                        shared_model = model
+
             params = OPTIMIZER_PARAMS[opt]
             lr_default = _nearest_lr(lr_for_optimizer(opt, default_lr, adaptive_lr))
 
@@ -65,5 +96,5 @@ def render_garage(mode, default_lr, adaptive_lr=None):
         if name in used:                      # names key the colour dict, keep unique
             name = f'{name} ({i + 1})'
         used.add(name)
-        racers.append(RacerConfig(name=name, color=color, optimizer=opt, **kw))
+        racers.append(RacerConfig(name=name, color=color, optimizer=opt, model=model, **kw))
     return racers

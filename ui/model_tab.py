@@ -8,11 +8,13 @@ import streamlit as st
 
 from core.config import DEFAULT_SEED, DEVICE
 from core.data import get_data
+from core.models import build_model, summarize
 from core.race_engine import run_model_race
-from core.schemas import RaceConfig
+from core.registry_models import MODEL_PRESETS
+from core.schemas import RaceConfig, RacerConfig
 from core.storage import save_run, load_run, list_runs, replay_logs, total_steps
-from core.tables import model_results_rows
-from core.viz import lanes_figure, loss_figure, acc_figure
+from core.tables import model_results_rows, badge_text
+from core.viz import lanes_figure, loss_figure, acc_figure, params_figure
 from ui.garage import render_garage
 
 REDRAW_EVERY = 5        # redraw the live view every N steps (tunable)
@@ -23,6 +25,7 @@ DEFAULT_TARGET = 0.85   # calibrated: Adam and Momentum reach it, SGD does not i
 SGD_LR = 0.03           # default rate for SGD, Momentum, Nesterov
 ADAPTIVE_LR = 0.003     # default rate for Adam, AdamW, RMSprop, Adagrad
 BATCH_SIZES = [32, 64, 128]
+IN_SHAPE, N_CLASSES = (1, 28, 28), 10      # FashionMNIST (Phase 6 makes this per dataset)
 
 
 @st.cache_resource(show_spinner='Loading FashionMNIST (the first run downloads about 30 MB)...')
@@ -30,16 +33,23 @@ def cached_data(subset_size, seed):
     return get_data(subset_size, 1000, seed)
 
 
+@st.cache_data(show_spinner=False)
+def _summary_rows(model_name, in_shape, n_classes):
+    cfg = RacerConfig(name='x', color='#000000', optimizer='SGD', model=model_name)
+    return summarize(build_model(cfg, in_shape, n_classes), in_shape)
+
+
 def _make_slots():
     """Placeholders, created after the controls so the visuals sit below them."""
-    return dict(progress=st.empty(), status=st.empty(), lanes=st.empty(),
-                curves=st.empty(), table=st.empty())
+    return dict(badge=st.empty(), progress=st.empty(), status=st.empty(), lanes=st.empty(),
+                curves=st.empty(), table=st.empty(), summary=st.empty())
 
 
 def _draw(slots, logs, racers, rc, tag, status_text=None):
     """One drawing routine for live races, finished races and replays.
     `tag` must be unique within one script run (it keys the charts)."""
     colors = {r.name: r.color for r in racers}
+    slots['badge'].info(badge_text(racers))
     if status_text is not None:
         slots['status'].markdown(status_text)
     slots['lanes'].plotly_chart(
@@ -49,8 +59,32 @@ def _draw(slots, logs, racers, rc, tag, status_text=None):
         c1.plotly_chart(loss_figure(logs, colors), width='stretch', key=f'{tag}_loss')
         c2.plotly_chart(acc_figure(logs, colors, rc.target_acc), width='stretch',
                         key=f'{tag}_acc')
-    slots['table'].dataframe(pd.DataFrame(model_results_rows(logs, racers)),
-                             width='stretch', hide_index=True)
+    with slots['table'].container():
+        t1, t2 = st.columns([3, 2])
+        t1.dataframe(pd.DataFrame(model_results_rows(logs, racers)),
+                     width='stretch', hide_index=True)
+        t2.plotly_chart(params_figure(logs, colors), width='stretch', key=f'{tag}_params')
+
+
+def _draw_summaries(slots, racers):
+    """Layer table per racer. Drawn once after a race, replay or restore (not while training)."""
+    with slots['summary'].container():
+        st.markdown('**Model summaries**')
+        for r in racers:
+            preset = MODEL_PRESETS.get(r.model, {})
+            with st.expander(f"{r.name}: {preset.get('label', r.model)}"):
+                try:
+                    rows = _summary_rows(r.model, IN_SHAPE, N_CLASSES)
+                except Exception as e:
+                    st.caption(f'No summary available: {e}')
+                    continue
+                st.dataframe(pd.DataFrame([{
+                    'Layer': x['layer'], 'Type': x['type'],
+                    'Output shape': ' x '.join(str(d) for d in x['output_shape']),
+                    'Params': x['params']} for x in rows]),
+                    width='stretch', hide_index=True)
+                st.caption(f"Total: {sum(x['params'] for x in rows):,} parameters. "
+                           f"{preset.get('lesson', '')}")
 
 
 def _run_live(racers, rc, slots):
@@ -79,6 +113,7 @@ def _run_live(racers, rc, slots):
         return None
     final = copy.deepcopy(logs)
     _draw(slots, final, racers, rc, 'final', '**Race finished.**')
+    _draw_summaries(slots, racers)
     path = save_run(racers, rc, final)
     st.success(f'Saved as a replay: {path.name}')
     return dict(logs=final, racers=racers, rc=rc, saved=path.name)
@@ -114,13 +149,14 @@ def _draw_replay(slots, rp):
     else:
         _draw(slots, replay_logs(logs, rp['k']), racers, rc, 'rstatic',
               f"**Replay** step {rp['k']} of {T}")
+    _draw_summaries(slots, racers)
 
 
 def render():
     st.subheader('Real Model Track')
-    st.caption('Every racer trains the same small CNN (20,490 parameters) on a 3,000-image '
-               'FashionMNIST subset, from identical starting weights and the same batches in '
-               'the same order. The lane position is the latest test accuracy.')
+    st.caption('Every racer trains a small CNN on a 3,000-image FashionMNIST subset, with the '
+               'same seed and the same batches in the same order. Pick each racer\'s network in '
+               'the Garage. The lane position is the latest test accuracy.')
 
     racers = render_garage('model', SGD_LR, ADAPTIVE_LR)           # sidebar
 
@@ -168,3 +204,4 @@ def render():
         else:
             _draw(slots, stored['logs'], stored['racers'], stored['rc'], 'stored',
                   '**Last race** (press Run race to repeat it with new settings)')
+            _draw_summaries(slots, stored['racers'])

@@ -2,16 +2,33 @@
 import math
 import torch
 from core.schemas import RacerLog
-from core.optimizers import build_optimizer
+from core.optimizers import build_optimizer, build_scheduler
 
 
-def run_landscape_race(racers, terrain, start, max_steps=300, tol=1e-3, bound=1e3):
+def run_landscape_race(racers, terrain, start, max_steps=300, tol=1e-3, bound=1e3,
+                       hazards=None, seed=42):
     """Racers do not interact, so running them one after another is equivalent
-    to a simultaneous race; the animation plays them together."""
+    to a simultaneous race; the animation plays them together.
+
+    hazards (optional dict):
+      noise_sigma: float, std of gradient noise added to every step ("wind")
+      zone: (x0, x1, y0, y1) danger-zone rectangle
+      kick: float, size of the random kick applied while inside the zone
+    Generators are recreated from `seed` for every racer and always drawn once per
+    step, so every racer receives the same noise sequence (fairness rule 5).
+    """
+    hz = hazards or {}
+    sigma = float(hz.get('noise_sigma', 0.0))
+    zone = hz.get('zone')
+    kick = float(hz.get('kick', 0.0))
+
     logs = []
     for cfg in racers:
         p = torch.tensor(start, dtype=torch.float32, requires_grad=True)
         opt = build_optimizer(cfg, [p])
+        sch = build_scheduler(cfg, opt, max_steps)
+        g_noise = torch.Generator().manual_seed(seed)
+        g_kick = torch.Generator().manual_seed(seed + 1)
         log = RacerLog(name=cfg.name)
         for step in range(max_steps + 1):
             loss = terrain.fn(p)
@@ -32,7 +49,18 @@ def run_landscape_race(racers, terrain, start, max_steps=300, tol=1e-3, bound=1e
                 break
             opt.zero_grad()
             loss.backward()
+            noise = torch.randn(2, generator=g_noise)     # always drawn: same sequence
+            kicks = torch.randn(2, generator=g_kick)      # for every racer
+            if sigma > 0:
+                p.grad.add_(sigma * noise)
             opt.step()
+            if sch is not None:
+                sch.step()
+            if zone is not None and kick > 0:
+                x0, x1, y0, y1 = zone
+                if x0 <= p[0].item() <= x1 and y0 <= p[1].item() <= y1:
+                    with torch.no_grad():
+                        p.add_(kick * kicks)
         logs.append(log)
     return logs
 

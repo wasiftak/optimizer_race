@@ -56,7 +56,7 @@ def run_model_race(racers, race_cfg, data=None, model_factory=None, device=None)
     torch.manual_seed(race_cfg.seed)
 
     if data is None:
-        data = get_data(race_cfg.subset_size, 1000, race_cfg.seed)
+        data = get_data(race_cfg.subset_size, 1000, race_cfg.seed, dataset=race_cfg.dataset)
     xtr, ytr = data['xtr'].to(device), data['ytr'].to(device)
     xte, yte = data['xte'].to(device), data['yte'].to(device)
     _validate(racers, race_cfg, len(xtr))

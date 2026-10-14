@@ -35,6 +35,21 @@ def _table(ranking):
         for r in ranking])
 
 
+def _about(terrain):
+    """Collapsed panel: the equation and a plain-words description of the terrain."""
+    xmin, xmax, ymin, ymax = terrain.bounds
+    with st.expander(f'About {terrain.name}', expanded=False):
+        st.latex(terrain.equation)
+        st.markdown(terrain.about)
+        c1, c2 = st.columns(2)
+        c1.markdown(f'**Finish line:** {terrain.minima_text}')
+        c2.markdown(f'**Default start:** {terrain.default_start}  \n'
+                    f'**Map range:** x from {xmin} to {xmax}, y from {ymin} to {ymax}')
+        st.info(f'**Try this:** {terrain.try_this}')
+        st.caption('Height is loss. The map colours show log(1 + loss), so steep terrains '
+                   'stay readable: darker means lower loss.')
+
+
 def _hazard_controls(terrain, key, start):
     """Returns (hazards dict, zone tuple or None, seed)."""
     xmin, xmax, ymin, ymax = terrain.bounds
@@ -84,6 +99,7 @@ def render():
     key = st.selectbox('Terrain', list(TERRAINS.keys()),
                        format_func=lambda k: TERRAINS[k].name, key='land_terrain')
     terrain = TERRAINS[key]
+    _about(terrain)
 
     racers = render_garage('land', terrain.default_lr, terrain.adaptive_lr)   # sidebar
 
